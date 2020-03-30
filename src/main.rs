@@ -181,7 +181,7 @@ impl FmIndex {
 			let dist_to_read_start = seed_end - match_len;
 
 			//Where the read should start
-			let pos = self.suffix_arr[i] - dist_to_read_start;
+			let pos = if self.suffix_arr[i] > dist_to_read_start { self.suffix_arr[i] - dist_to_read_start} else {0};
 			alignments.push(pos);
 		}
 
@@ -283,7 +283,6 @@ fn fitting_alignment(x : &str, y : &str) -> Vec<Alignment> {
 			max_pos = (y_len - 1, i);
 		}
 		else if matrix[y_len - 1][i] == max_val{
-            println!("DUPLICATE MAX");
 		}
 	}
 
@@ -421,19 +420,19 @@ fn align(bwt_file : &str, reads : &str, output : &str){
                 for mut align in all_align {
     				if align.score > best_score {
     					best_score = align.score;
-                        align.pos = start;
+                        align.pos = pos;
     					alignments = vec![align; 1];
                         //println!("new best score");
     				}
     				else if align.score == best_score {
-                        align.pos = start;
+                        align.pos = pos;
     					alignments.push(align);
     				}
                 }
             }
 		}
 
-        println!("writing to sam");
+        //println!("writing to sam");
         write_sam(alignments,  &read.seq, i, &mut sam_file);
         i+=1;
 	}
@@ -598,7 +597,7 @@ fn write_sam(alignments : Vec<Alignment>, read : &str, read_index : i32, output 
         //Equivalent to ref_id in pysam
         //rec.set_tid(0);
         //Documentation specifies 0-based
-        rec.set_pos((align.pos - 1) as i64);
+        rec.set_pos(align.pos as i64);
 
         output.write(&mut rec).expect("Failed to write record.");
         i+=1;
@@ -879,7 +878,7 @@ fn fitting_alignment2(x : &str, y : &str) -> Vec<Alignment> {
 	let cost_match = |x_pos, y_pos| {
 		//Subtract one to account for the gap
         //TODO
-		if (y.as_bytes()[y_pos - 1] == '[' as u8) || (x.as_bytes()[x_pos - 1] == y.as_bytes()[y_pos - 1]) {
+		if (y.as_bytes()[y_pos - 1] == 'N' as u8) || (x.as_bytes()[x_pos - 1] == y.as_bytes()[y_pos - 1]) {
 			return MATCH_SCORE;
 		}
 		else {
@@ -946,7 +945,6 @@ fn fitting_alignment2(x : &str, y : &str) -> Vec<Alignment> {
 			max_pos = (y_len - 1, i);
 		}
 		else if matrix[y_len - 1][i] == max_val{
-            println!("DUPLICATE MAX");
 		}
 	}
 
@@ -962,61 +960,35 @@ fn fitting_alignment2(x : &str, y : &str) -> Vec<Alignment> {
 
 	//Begin the backtracing process
 	
-    let mut cigar_strings : Vec<Vec<Option<Vec<CigarStr>>>> = (0..y_len).map(|_| (0..x_len).map(|_| None).collect()).collect();
-    fn get_cigar_strings(pos : (usize, usize), calculated : &mut Vec<Vec<Option<Vec<CigarStr>>>>, next_cells : &Vec<Vec<Vec<(usize, usize)>>>) -> Vec<CigarStr> {
+    fn get_cigar_strings(pos : (usize, usize), next_cells : &Vec<Vec<Vec<(usize, usize)>>>) -> CigarStr {
         //Base case for reaching the edge of the matrix
         if pos.0 == 0 || pos.1 == 0 {
-            return vec![CigarStr::new(); 1];
+            return CigarStr::new();
         }
 
 
         //println!("{:?}", (pos));
 
 
-        let mut ans = Vec::new();
-        //Iterating over all the possible paths
-        //for cell in &next_cells[pos.0][pos.1] {
-
         let cell = &next_cells[pos.0][pos.1][0];
-            match &calculated[pos.0][pos.1] {
-                None => {
-                    //println!("Calculating");
-                    let hello = get_cigar_strings(*cell, calculated, next_cells); 
                     //Append a cigar char to all of the results from the recursive call
                     match (pos.0 - cell.0, pos.1 - cell.1) {
         		        (1, 1) => {
-                            ans.append(&mut get_cigar_strings(*cell, calculated, next_cells).iter().map(|s| { s.push('M')}).collect::<Vec<CigarStr>>());
+                            return get_cigar_strings(*cell, next_cells).push('M');
                         },
-        		        (1, 0) => {
-                            ans.append(&mut get_cigar_strings(*cell, calculated, next_cells).iter().map(|s| { s.push('I') }).collect::<Vec<CigarStr>>());
+                        (1, 0) => {
+                            return get_cigar_strings(*cell, next_cells).push('I');
                         },
         		        (0, 1) => {
-                            ans.append(&mut get_cigar_strings(*cell, calculated, next_cells).iter().map(|s| { s.push('D') }).collect::<Vec<CigarStr>>());
+                            return get_cigar_strings(*cell, next_cells).push('D');
                         },
         		        (_, _) => {
         		        	panic!("Bruh wtf.");
         		        }
                     }
-
-                    //Save the values just calculated to speed up future recursive calls
-                    (*calculated)[pos.0][pos.1] = Some(ans.clone());
-                },
-                Some(cigar_str) => {
-                    //println!("Skipped");
-                    //println!("Cache: {:?}", strs.len());
-                    //println!("{:?}", cigar_chars.iter().map(|c| get_cigar_strings(*cell, &mut calculated.clone(), next_cells).iter().map(|s| { let mut r = s.to_string(); r.push(*c); r}).collect::<Vec<String>>()).collect::<Vec<Vec<String>>>());
-                    //println!("Saving : {:?}", ans);
-                    ans.append(&mut cigar_str.clone());
-                    //let mut res = cigar_chars.iter().map(|c| hello.iter().map(|s| { s.push(*c) }).collect::<Vec<CigarStr>>()).flatten().collect::<Vec<CigarStr>>();
-                    //ans.append(&mut res);
-                }
-            }
-        //}
-        
-        return ans;
     }
 
-    let res = get_cigar_strings(max_pos, &mut cigar_strings, &path_next).iter().map(|s| Alignment {score: max_val, CIGAR: s.to_cigar(), pos: 0} ).collect::<Vec<Alignment>>();
-    println!("{:?}", res);
-    return res;
+    let res = get_cigar_strings(max_pos, &path_next);
+    //println!("{:?}", res);
+    return vec![Alignment {score: max_val, CIGAR: res.to_cigar(), pos: 0} ];
 }
