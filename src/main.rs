@@ -8,8 +8,11 @@ use std::cmp::min;
 use std::str::Chars;
 use std::iter::Rev;
 use std::fmt::Debug;
-use rust_htslib::bam::{Writer, Format, Header};
-
+use rust_htslib::bam::{Writer, Format, Header, Record};
+use rust_htslib::bam::record::{CigarString, Aux, Cigar};
+use rust_htslib::bam::header::HeaderRecord;
+use std::convert::TryFrom;
+use std::{thread, time};
 //const ALPHABET : [char; 2] = ['a', 'b']; 
 const ALPHABET : [char; 4] = ['A', 'C', 'G', 'T'];
 
@@ -27,7 +30,7 @@ fn main() {
     	"align" => {
     		let input = &args[2];
     		let reads = &args[3];
-    		let output = &args[3];
+    		let output = &args[4];
 
 
     		align(input, reads, output);
@@ -61,10 +64,11 @@ struct GenRead{
 	seq: String,
 }
 
+#[derive(Debug, Clone)]
 struct Alignment {
-	score : u32,
-	CIGAR : String,
-	pos: u32
+	score : i32,
+	CIGAR : Vec<Cigar>,
+	pos: usize
 }
 
 //The name and length of the input sequence (which is referred to below as S) : Done
@@ -98,6 +102,8 @@ fn parse_reads(lines : Vec<String>) -> Vec<GenRead>{
 impl FmIndex {
 	fn get_interval(&self, query : &str) -> ((usize, usize), usize){
 		//println!("Query: {}", query);
+
+        //static 
 
 		//Reverse the string so we can iterate it backwards
 		let mut remaining_query = query.chars().rev();
@@ -184,17 +190,20 @@ impl FmIndex {
 
 }
 
-fn print_2d_vec<T: Debug>(matrix : &Vec<Vec<T>>){
+fn print_2d_vec(matrix : &Vec<Vec<Vec<(usize, usize)>>>){
 	for y in matrix {
 		for x in y{
-			print!("{:?} ", x);
+			print!("{:?} ", x.len());
 		}
 		print!("\n");
 	}
 }
 
 //semi global alignment trying to fit 'y' into 'x'
-fn fitting_alignment(x : &str, y : &str) {
+fn fitting_alignment(x : &str, y : &str) -> Vec<Alignment> {
+    println!("Aligning {} to", y);
+    println!("{}", x);
+
 	//Add one for the gap in the start
 	let x_len = x.len() + 1;
 	let y_len = y.len() + 1;
@@ -208,7 +217,7 @@ fn fitting_alignment(x : &str, y : &str) {
 
 	let cost_match = |x_pos, y_pos| {
 		//Subtract one to account for the gap
-		if x.as_bytes()[x_pos - 1] == y.as_bytes()[y_pos - 1] {
+		if (y.as_bytes()[y_pos - 1] == 'N' as u8) || (x.as_bytes()[x_pos - 1] == y.as_bytes()[y_pos - 1]) {
 			return MATCH_SCORE;
 		}
 		else {
@@ -239,8 +248,8 @@ fn fitting_alignment(x : &str, y : &str) {
 			];
 			
 			let mut possible_paths = Vec::<(usize, usize)>::new();
-			let mut max_score : i32 = i32::MIN;
-			//Find the min of the three possible options
+			let mut max_score : i32 = std::i32::MIN;
+			//Find the max of the three possible options
 			for i in 0..3 {
 				if options[i].0 > max_score {
 					max_score = options[i].0;
@@ -257,55 +266,73 @@ fn fitting_alignment(x : &str, y : &str) {
 		}
 
 	}
-	print_2d_vec(&matrix);
+	//print_2d_vec(&matrix);
 
-	println!("");
-	print_2d_vec(&path_next);
+	//println!("");
+	//print_2d_vec(&path_next);
 
 	//Find the largest value in the last row 
-	let mut max_val = i32::MIN;
+	let mut max_val = std::i32::MIN;
 	//(y,x)
-	let mut pos = (0,0);
+	let mut max_pos = (0,0);
 
 	for i in 0..x_len {
 		//TODO: account for multiple max_vals
 		if matrix[y_len - 1][i] > max_val {
 			max_val = matrix[y_len - 1][i];
-			pos = (y_len - 1, i);
+			max_pos = (y_len - 1, i);
 		}
 		else if matrix[y_len - 1][i] == max_val{
-
+            println!("DUPLICATE MAX");
 		}
 	}
 
-	println!("Max val {:?} @ {:?}", max_val, pos);
+	println!("Max val {:?} @ {:?}", max_val, max_pos);
+    if max_val >0 {
+        println!("hang:");
+	    //print_2d_vec(&matrix);
+	    print_2d_vec(&path_next);
+
+    }
+
+    let mut backtrace_cache : HashMap<(usize, usize), Vec<Vec<Cigar>>> = HashMap::new();
 
 	//Begin the backtracing process
-	let paths = &path_next[pos.0][pos.1];
+	let paths = &path_next[max_pos.0][max_pos.1];
 
 	//pos : (y,x)
-	fn get_cigars (paths : &Vec<(usize, usize)>, (pos_y, pos_x) : (usize, usize), cigar_acc : String, x : &str, y : &str, matrix : &Vec<Vec<i32>>, path_next : &Vec<Vec<Vec<(usize, usize)>>>) -> Vec<String>{
+	fn get_cigars (paths : &Vec<(usize, usize)>, (pos_y, pos_x) : (usize, usize), cigar_acc : &Vec<Cigar>, x : &str, y : &str, matrix : &Vec<Vec<i32>>, path_next : &Vec<Vec<Vec<(usize, usize)>>>, cigar_pos : usize, max_val : i32, backtrace_cache : &mut HashMap<(usize, usize), Vec<Vec<Cigar>>>) -> Vec<Alignment>{
+        //println!("{:?}", (pos_y, pos_x));
+        //thread::sleep(time::Duration::from_secs(2));
 		//Base case for when we reach the boundries of the matrix
 		if paths.len() == 0 {
-			return vec![cigar_acc];
+            println!("Returning");
+			return vec![Alignment {
+                score: max_val,
+                CIGAR: cigar_acc.to_vec(),
+                pos: cigar_pos
+            }];
 		}
 
-		let updated_cigar = |(curr_y,curr_x) : (usize, usize), (next_y, next_x) : (usize, usize), curr_cigar : &str| -> String {
+
+        //TODO: make sure that this is recursing in the right order
+		let updated_cigar = |(curr_y,curr_x) : (usize, usize), (next_y, next_x) : (usize, usize), curr_cigar : &Vec<Cigar>| -> Vec<Cigar> {
+            //Create a clone so that we don't modify the same vector accross all possible pathes
+            let mut curr_cigar = curr_cigar.clone();
+
 			//pos_ - paths[0]. will return the direction of the path
 			match (curr_y - next_y, curr_x - next_x){
 				(1, 1) => {
-					if x.as_bytes()[curr_x - 1] == y.as_bytes()[curr_y - 1] {
-						curr_cigar.to_string() + "M"
-					}
-					else {
-						curr_cigar.to_string() + "X"
-					}
+					curr_cigar.push(Cigar::Match(1));
+                    curr_cigar
 				},
 				(1, 0) => {
-					curr_cigar.to_string() + "I"
+					curr_cigar.push(Cigar::Ins(1));
+                    curr_cigar
 				},
 				(0, 1) => {
-					curr_cigar.to_string() + "D"
+					curr_cigar.push(Cigar::Del(1));
+                    curr_cigar
 				},
 				(_, _) => {
 					panic!("Bruh wtf.");
@@ -313,19 +340,56 @@ fn fitting_alignment(x : &str, y : &str) {
 			}
 		};
 
-		let mut next = (paths[0].0, paths[0].1);
-		//Parse the first possible path
-		let mut ret_vec = get_cigars(&path_next[next.0][next.1], next, updated_cigar((pos_y, pos_x), next, &cigar_acc), x, y, &matrix, &path_next);
+        println!("Processing paths : {:?} @ {:?}", paths, (pos_y, pos_x));
+        //thread::sleep(time::Duration::from_millis(450));
 
-		for i in 1..paths.len() {
-			next = (paths[i].0, paths[i].1);
-			ret_vec.append(&mut get_cigars(&path_next[next.0][next.1], next, updated_cigar((pos_y, pos_x), next, &cigar_acc), x, y, &matrix, &path_next));
+		//let mut next = (paths[0].0, paths[0].1);
+		//Parse the first possible path
+		//let mut ret_vec = get_cigars(&path_next[next.0][next.1], next, &updated_cigar((pos_y, pos_x), next, &cigar_acc), x, y, &matrix, &path_next, cigar_pos, max_val);
+        let mut ret_vec = Vec::new();
+
+        //Process all possible paths
+		for i in 0..paths.len() {
+			let new_next = (paths[i].0, paths[i].1);
+            let new_cigar = updated_cigar((pos_y, pos_x), new_next, &cigar_acc);
+
+            //If the next cell has not been processed before
+            if (*backtrace_cache).contains_key(&new_next) == false{
+                let mut vals = get_cigars(&path_next[new_next.0][new_next.1], new_next, &new_cigar, x, y, &matrix, &path_next, cigar_pos, max_val, backtrace_cache);
+
+                //Add the new cigar characters to the cache
+                let cache = vals.iter().map(|align| align.CIGAR[new_cigar.len()..].to_vec()).collect::<Vec<Vec<Cigar>>>();
+                println!("Cache {:?}", vals.len());
+                (*backtrace_cache).insert(new_next, cache);
+
+                ret_vec.append(&mut vals);
+            }
+            else {
+                println!("Found cache");
+                let mut vals = (*backtrace_cache).get(&new_next).unwrap().iter().map(
+                    |pre_calc| { 
+                        let mut c = new_cigar.clone(); 
+                        c.append(&mut pre_calc.clone()); 
+                        Alignment {
+                            score: max_val,
+                            CIGAR: c,
+                            pos: cigar_pos
+                        }
+                    }).collect::<Vec<Alignment>>();
+                ret_vec.append(&mut vals);
+                return ret_vec;
+            }
+
+			//ret_vec.append(&mut get_cigars(&path_next[next.0][next.1], next, &updated_cigar((pos_y, pos_x), next, &cigar_acc), x, y, &matrix, &path_next, cigar_pos, max_val));
 		}
 
 		return ret_vec;
 	};
 
-	println!("{:?}", get_cigars(paths, pos, "".to_string(), x, y, &matrix, &path_next));
+    println!("Getting cigars");
+	return get_cigars(paths, max_pos, &Vec::new(), x, y, &matrix, &path_next, max_pos.1, max_val, &mut backtrace_cache);
+    //Placeholdeer
+    //return Vec::new();
 }
 
 fn align(bwt_file : &str, reads : &str, output : &str){
@@ -346,14 +410,14 @@ fn align(bwt_file : &str, reads : &str, output : &str){
 	const gap : usize = 5;
 
 	for read in reads.iter() {
-		let alignments : Vec<Alignment> = Vec::new();
+		let mut alignments : Vec<Alignment> = Vec::new();
 		let read_len = read.seq.len();
-		let mut best_score : u32 = u32::MAX;
+		let mut best_score : i32 = std::i32::MIN;
 		let seed_pos = 0;
 
 		let seed_skip = |len : usize| -> usize {(len as f64 / 5.0).floor() as usize};
 		let skip = seed_skip(read_len);
-		println!("Read: {:?}", &read.seq);
+		//println!("Read: {:?}", &read.seq);
 
 		for seed_start in (0..read_len).step_by(skip){
 			let seed_end = min(read_len, seed_start + skip);
@@ -364,46 +428,199 @@ fn align(bwt_file : &str, reads : &str, output : &str){
 				continue;
 			}
 
-			println!("Seed: {:?}", seed);
+			//println!("Seed: {:?}", seed);
 
 			let (interval, match_len) = fm_index.get_interval(seed);
 
 			for pos in fm_index.ref_positions(interval, seed_end, match_len){
 				let pos = pos as usize;
 				let read_len = read_len as usize;
-				let start = (gap + pos);
-				let end = (pos + read_len + gap);
+                //TODO: this part is wrong, needs fixing
+				let start = match pos.checked_sub(gap) { None => {0}, Some(x) => {x} };
+				let end = min(pos + read_len + gap, fm_index.len);
 
-				println!("Aligning {} to {}", read.seq, &fm_index.seq[start..end]);
-				//let alignment = fm_index.fitting_alignment(read.seq, pos, gap);
-				//Looking for the minimum here, not the max
-/*				if alignment.score < best_score {
-					best_score = alignment.score;
-					alignments = vec![alignment; 1];
-				}
-				else if alignment.score == best_score {
-					alignments.push(alignment);
-				}*/
-			}
-
-
-
-
+				//println!("Aligning {} to {}", read.seq, &fm_index.seq[start..end]);
+				let all_align = fitting_alignment(&fm_index.seq[start..end], &read.seq);
+                panic!("Done");
+                for align in all_align {
+    				if align.score > best_score {
+    					best_score = align.score;
+    					alignments = vec![align; 1];
+                        println!("new best score");
+    				}
+    				else if align.score == best_score {
+    					alignments.push(align);
+    				}
+                }
+            }
 		}
+
+        println!("writing to sam");
+        write_sam(alignments,  &read.seq, &fm_index,output);
 	}
 
 }
 
 #[test]
+fn test_borrow(){
+    test_borrow();
+    let mut a = Vec::<i32>::new();
+    println!("{:?}", a);
+    add(&mut a);
+    println!("{:?}", a);
+}
+
+fn add(a : &mut Vec<i32>){
+    (*a).push(1);
+}
+
+
+#[test]
 fn test_fitting_alignment(){	
 	fitting_alignment("PANCAKE", "ANAK");
 }
-
+fn gold() -> (
+[&'static [u8]; 6],
+[u16; 6],
+[&'static [u8]; 6],
+[&'static [u8]; 6],
+[CigarString; 6],
+) {
+let names = [
+    &b"I"[..],
+    &b"II.14978392"[..],
+    &b"III"[..],
+    &b"IV"[..],
+    &b"V"[..],
+    &b"VI"[..],
+];
+let flags = [16u16, 16u16, 16u16, 16u16, 16u16, 2048u16];
+let seqs = [
+    &b"CCTAGCCCTAACCCTAACCCTAACCCTAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCC\
+TAAGCCTAAGCCTAAGCCTAA"[..],
+    &b"CCTAGCCCTAACCCTAACCCTAACCCTAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCC\
+TAAGCCTAAGCCTAAGCCTAA"[..],
+    &b"CCTAGCCCTAACCCTAACCCTAACCCTAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCC\
+TAAGCCTAAGCCTAAGCCTAA"[..],
+    &b"CCTAGCCCTAACCCTAACCCTAACCCTAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCC\
+TAAGCCTAAGCCTAAGCCTAA"[..],
+    &b"CCTAGCCCTAACCCTAACCCTAACCCTAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCC\
+TAAGCCTAAGCCTAAGCCTAA"[..],
+    &b"ACTAAGCCTAAGCCTAAGCCTAAGCCAATTATCGATTTCTGAAAAAATTATCGAATTTTCTAGAAATTTTGCAAATTTT\
+TTCATAAAATTATCGATTTTA"[..],
+];
+let quals = [
+    &b"#############################@B?8B?BA@@DDBCDDCBC@CDCDCCCCCCCCCCCCCCCCCCCCCCCCCCCC\
+CCCCCCCCCCCCCCCCCCC"[..],
+    &b"#############################@B?8B?BA@@DDBCDDCBC@CDCDCCCCCCCCCCCCCCCCCCCCCCCCCCCC\
+CCCCCCCCCCCCCCCCCCC"[..],
+    &b"#############################@B?8B?BA@@DDBCDDCBC@CDCDCCCCCCCCCCCCCCCCCCCCCCCCCCCC\
+CCCCCCCCCCCCCCCCCCC"[..],
+    &b"#############################@B?8B?BA@@DDBCDDCBC@CDCDCCCCCCCCCCCCCCCCCCCCCCCCCCCC\
+CCCCCCCCCCCCCCCCCCC"[..],
+    &b"#############################@B?8B?BA@@DDBCDDCBC@CDCDCCCCCCCCCCCCCCCCCCCCCCCCCCCC\
+CCCCCCCCCCCCCCCCCCC"[..],
+    &b"#############################@B?8B?BA@@DDBCDDCBC@CDCDCCCCCCCCCCCCCCCCCCCCCCCCCCCC\
+CCCCCCCCCCCCCCCCCCC"[..],
+];
+let cigars = [
+    CigarString(vec![Cigar::Match(27), Cigar::Del(1), Cigar::Match(73)]),
+    CigarString(vec![Cigar::Match(27), Cigar::Del(1), Cigar::Match(73)]),
+    CigarString(vec![Cigar::Match(27), Cigar::Del(1), Cigar::Match(73)]),
+    CigarString(vec![Cigar::Match(27), Cigar::Del(1), Cigar::Match(73)]),
+    CigarString(vec![Cigar::Match(27), Cigar::Del(1), Cigar::Match(73)]),
+    CigarString(vec![Cigar::Match(27), Cigar::Del(100000), Cigar::Match(73)]),
+];
+(names, flags, seqs, quals, cigars)
+}
 #[test]
 fn test_write_sam(){	
-	Writer::from_path("test.sam", &Header::new(), Format::SAM)l
+
+let (names, _, seqs, quals, cigars) = gold();
+
+        {
+            let mut bam = Writer::from_path(
+                "yeet.sam",
+                Header::new().push_record(
+                    HeaderRecord::new(b"SQ")
+                        .push_tag(b"VN", &"1.0")
+                        .push_tag(b"SN", &"nCov-2019")
+                        .push_tag(b"LN", &15072423),
+                ),
+                Format::SAM,
+            )
+            .ok()
+            .expect("Error opening file.");
+
+            for name in names.iter() {
+                let mut rec = Record::new();
+                rec.set(&b"hwllo"[..], Some(&CigarString(vec![Cigar::Match(27), Cigar::Del(1), Cigar::Match(73)])), &b"CCTAGCCCTAACCCTAACCCTAACCCTAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCCTAAGCC\
+TAAGCCTAAGCCTAAGCCTAA"[..], &vec![255 as u8; 100][..]);
+
+                bam.write(&mut rec).expect("Failed to write record.");
+            }
+        }
+
+
 }
 
+#[test]
+fn test_write_sam2(){
+    let mut header = Header::new();
+    header.push_record(HeaderRecord::new(b"HD").push_tag(b"VN", &"1.0").push_tag(b"SN", &"nCov-2019").push_tag(b"LN", &10000));
+    let mut sam = Writer::from_path("test123.sam", &header, Format::SAM);
+    println!("a");
+ 
+}
+
+fn write_sam(alignments : Vec<Alignment>, read : &str, index : &FmIndex, output : &str){
+    let mut header = Header::new();
+    header.push_record(HeaderRecord::new(b"SQ").push_tag(b"VN", &"1.0").push_tag(b"SN", &"nCov-2019").push_tag(b"LN", &15072423));
+    let mut sam = Writer::from_path("fuck", &header, Format::SAM).ok().expect("Error opening file");
+    
+    //Fields that need to be set
+    //querynam
+    //query_seq
+    //flag
+    //ref_id
+    //ref_start
+    //cigar
+    //next_ref_id
+    //next_ref_start
+
+    let mut i = 0;
+    for align in alignments{
+        let mut rec = Record::new();
+        rec.set(
+            { 
+                let mut name = "read_".to_string();
+                name.push_str(&i.to_string());
+                name
+            }
+            .as_bytes(),
+            Some(&CigarString(align.CIGAR)),
+            read.as_bytes(),
+            &vec![ 255 as u8; 100][..]
+        );
+
+        //Set the flag of only the first alignment to 0
+        //if i == 0 {
+        //   rec.set_flags(0); 
+        //}
+        //else {
+        //    rec.set_flags(256);
+        //}
+
+        //Equivalent to ref_id in pysam
+        //rec.set_tid(0);
+        //Documentation specifies 0-based
+        rec.set_pos((align.pos - 1) as i64);
+
+        sam.write(&mut rec).expect("Failed to write record.");
+        i+=1;
+    }
+
+}
 
 /*#[test]
 fn test_get_interval(){
