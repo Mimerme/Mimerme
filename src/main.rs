@@ -201,8 +201,8 @@ fn print_2d_vec(matrix : &Vec<Vec<Vec<(usize, usize)>>>){
 
 //semi global alignment trying to fit 'y' into 'x'
 fn fitting_alignment(x : &str, y : &str) -> Vec<Alignment> {
-    println!("Aligning {} to", y);
-    println!("{}", x);
+    //println!("Aligning {} to", y);
+    //println!("{}", x);
 
 	//Add one for the gap in the start
 	let x_len = x.len() + 1;
@@ -386,6 +386,7 @@ fn align(bwt_file : &str, reads : &str, output : &str){
 
     let mut i = 0;
 	for read in reads.iter() {
+        println!("Read {}", i + 1);
 		let mut alignments : Vec<Alignment> = Vec::new();
 		let read_len = read.seq.len();
 		let mut best_score : i32 = std::i32::MIN;
