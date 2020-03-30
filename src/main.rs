@@ -190,10 +190,10 @@ impl FmIndex {
 
 }
 
-fn print_2d_vec(matrix : &Vec<Vec<Vec<(usize, usize)>>>){
+fn print_2d_vec<T : Debug>(matrix : &Vec<Vec<T>>){
 	for y in matrix {
 		for x in y{
-			print!("{:?} ", x.len());
+			print!("{:?} ", x);
 		}
 		print!("\n");
 	}
@@ -417,7 +417,7 @@ fn align(bwt_file : &str, reads : &str, output : &str){
 				let end = min(pos + read_len + gap, fm_index.len);
 
 				//println!("Aligning {} to {}", read.seq, &fm_index.seq[start..end]);
-				let all_align = fitting_alignment(&fm_index.seq[start..end], &read.seq);
+				let all_align = fitting_alignment2(&fm_index.seq[start..end], &read.seq);
                 for mut align in all_align {
     				if align.score > best_score {
     					best_score = align.score;
@@ -454,8 +454,8 @@ fn add(a : &mut Vec<i32>){
 
 
 #[test]
-fn test_fitting_alignment(){	
-	fitting_alignment("PANCAKE", "ANAK");
+fn test_fitting_alignment2(){	
+	fitting_alignment2("PANCAKE", "ANAK");
 }
 fn gold() -> (
 [&'static [u8]; 6],
@@ -817,4 +817,206 @@ fn substring(input_file : &str, start : usize, end : usize){
 		};
 
 	println!("{}", &sequence[start..end]);
+}
+
+
+#[derive(Debug, Clone)]
+struct CigarStr {
+    cigarstr : Vec<(u8, char)>
+}
+
+impl CigarStr {
+    pub fn new() -> CigarStr{
+        CigarStr { cigarstr : Vec::new() }
+    }
+
+    pub fn push(&self, c : char) -> CigarStr {
+        let mut new_str = self.cigarstr.clone();
+        let len = new_str.len();
+        if len != 0 && c == new_str[len - 1].1 {
+            new_str[len - 1].0 += 1;
+        }
+        else {
+            new_str.push((1, c));
+        }
+
+        return CigarStr { cigarstr: new_str};
+    }
+
+    pub fn to_cigar(&self) -> Vec<Cigar> {
+        let mut cigar = Vec::new();
+        for entry in &self.cigarstr {
+            if entry.1 == 'M' {
+                cigar.push(Cigar::Match(entry.0.into()));
+            }
+            else if entry.1 == 'D' {
+                cigar.push(Cigar::Del(entry.0.into()));
+            }
+            else if entry.1 == 'I' {
+                cigar.push(Cigar::Ins(entry.0.into()));
+            }
+        }
+
+        return cigar;
+    }
+}
+
+fn fitting_alignment2(x : &str, y : &str) -> Vec<Alignment> {
+    //println!("Aligning {} to", y);
+    //println!("{}", x);
+
+	//Add one for the gap in the start
+	let x_len = x.len() + 1;
+	let y_len = y.len() + 1;
+
+	const MATCH_SCORE : i32 = 10;
+	const GAP_PENALTY : i32 = -7;
+	const MISMATCH_PENALTY : i32 = -5;
+	
+	let mut matrix : Vec<Vec<i32>> = (0..y_len).map(|_| (0..x_len).map(|_| 0).collect()).collect();
+	let mut path_next : Vec<Vec<Vec<(usize, usize)>>> = (0..y_len).map(|_| (0..x_len).map(|_| Vec::<(usize, usize)>::new()).collect()).collect();
+
+	let cost_match = |x_pos, y_pos| {
+		//Subtract one to account for the gap
+        //TODO
+		if (y.as_bytes()[y_pos - 1] == '[' as u8) || (x.as_bytes()[x_pos - 1] == y.as_bytes()[y_pos - 1]) {
+			return MATCH_SCORE;
+		}
+		else {
+			return MISMATCH_PENALTY;
+		}
+	};
+
+	//Populate the first 'x' row to 0
+	for i in 0..x_len {
+		matrix[0][i] = 0;
+	}
+
+	//Populate the first column
+	for i in 0..y_len {
+		matrix[i][0] = (i as i32) * GAP_PENALTY;
+	}
+
+	//Populate the rest of the matrix while keeping track of where the new value originates from
+	for y in 1..y_len {
+		for x in 1..x_len {
+			//All the possbiel values for the next value from the surrounding 3 cells
+			//(value, (y, x))
+			let options = vec![
+				(matrix[y - 1][x - 1] + cost_match(x, y), (y - 1, x - 1)),
+				//Add gap penalty to the vertical and horizontal traversal
+				(matrix[y - 1][x] + GAP_PENALTY, (y - 1, x)), 
+				(matrix[y][x - 1] + GAP_PENALTY, (y, x - 1))
+			];
+			
+			let mut possible_paths = Vec::<(usize, usize)>::new();
+			let mut max_score : i32 = std::i32::MIN;
+			//Find the max of the three possible options
+			for i in 0..3 {
+				if options[i].0 > max_score {
+					max_score = options[i].0;
+					possible_paths = vec![options[i].1];
+				}
+				else if options[i].0 == max_score {
+					possible_paths.push(options[i].1);
+				}
+			}
+
+			//Set the updated value and next path step
+			matrix[y][x] = max_score;
+			path_next[y][x] = possible_paths;
+		}
+
+	}
+
+	//print_2d_vec(&matrix);
+
+	//println!("");
+	//print_2d_vec(&path_next);
+
+	//Find the largest value in the last row 
+	let mut max_val = std::i32::MIN;
+	//(y,x)
+	let mut max_pos = (0,0);
+
+	for i in 0..x_len {
+		//TODO: account for multiple max_vals
+		if matrix[y_len - 1][i] > max_val {
+			max_val = matrix[y_len - 1][i];
+			max_pos = (y_len - 1, i);
+		}
+		else if matrix[y_len - 1][i] == max_val{
+            println!("DUPLICATE MAX");
+		}
+	}
+
+    //print_2d_vec(&matrix);
+
+	//println!("Max val {:?} @ {:?}", max_val, max_pos);
+    //if max_val >0 {
+    //    //println!("hang:");
+	//    //print_2d_vec(&matrix);
+	//    print_2d_vec(&path_next);
+
+    //}
+
+	//Begin the backtracing process
+	
+    let mut cigar_strings : Vec<Vec<Option<Vec<CigarStr>>>> = (0..y_len).map(|_| (0..x_len).map(|_| None).collect()).collect();
+    fn get_cigar_strings(pos : (usize, usize), calculated : &mut Vec<Vec<Option<Vec<CigarStr>>>>, next_cells : &Vec<Vec<Vec<(usize, usize)>>>) -> Vec<CigarStr> {
+        //Base case for reaching the edge of the matrix
+        if pos.0 == 0 || pos.1 == 0 {
+            return vec![CigarStr::new(); 1];
+        }
+
+
+        //println!("{:?}", (pos));
+
+
+        let mut ans = Vec::new();
+        //Iterating over all the possible paths
+        //for cell in &next_cells[pos.0][pos.1] {
+
+        let cell = &next_cells[pos.0][pos.1][0];
+            match &calculated[pos.0][pos.1] {
+                None => {
+                    //println!("Calculating");
+                    let hello = get_cigar_strings(*cell, calculated, next_cells); 
+                    //Append a cigar char to all of the results from the recursive call
+                    match (pos.0 - cell.0, pos.1 - cell.1) {
+        		        (1, 1) => {
+                            ans.append(&mut get_cigar_strings(*cell, calculated, next_cells).iter().map(|s| { s.push('M')}).collect::<Vec<CigarStr>>());
+                        },
+        		        (1, 0) => {
+                            ans.append(&mut get_cigar_strings(*cell, calculated, next_cells).iter().map(|s| { s.push('I') }).collect::<Vec<CigarStr>>());
+                        },
+        		        (0, 1) => {
+                            ans.append(&mut get_cigar_strings(*cell, calculated, next_cells).iter().map(|s| { s.push('D') }).collect::<Vec<CigarStr>>());
+                        },
+        		        (_, _) => {
+        		        	panic!("Bruh wtf.");
+        		        }
+                    }
+
+                    //Save the values just calculated to speed up future recursive calls
+                    (*calculated)[pos.0][pos.1] = Some(ans.clone());
+                },
+                Some(cigar_str) => {
+                    //println!("Skipped");
+                    //println!("Cache: {:?}", strs.len());
+                    //println!("{:?}", cigar_chars.iter().map(|c| get_cigar_strings(*cell, &mut calculated.clone(), next_cells).iter().map(|s| { let mut r = s.to_string(); r.push(*c); r}).collect::<Vec<String>>()).collect::<Vec<Vec<String>>>());
+                    //println!("Saving : {:?}", ans);
+                    ans.append(&mut cigar_str.clone());
+                    //let mut res = cigar_chars.iter().map(|c| hello.iter().map(|s| { s.push(*c) }).collect::<Vec<CigarStr>>()).flatten().collect::<Vec<CigarStr>>();
+                    //ans.append(&mut res);
+                }
+            }
+        //}
+        
+        return ans;
+    }
+
+    let res = get_cigar_strings(max_pos, &mut cigar_strings, &path_next).iter().map(|s| Alignment {score: max_val, CIGAR: s.to_cigar(), pos: 0} ).collect::<Vec<Alignment>>();
+    println!("{:?}", res);
+    return res;
 }
