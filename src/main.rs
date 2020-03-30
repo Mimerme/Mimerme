@@ -377,7 +377,7 @@ fn align(bwt_file : &str, reads : &str, output : &str){
         .collect();
 
     let mut header = Header::new();
-    header.push_record(HeaderRecord::new(b"SQ").push_tag(b"VN", &"1.0").push_tag(b"SN", &"nCov-2019").push_tag(b"LN", &fm_index.len));
+    header.push_record(HeaderRecord::new(b"SQ").push_tag(b"VN", &"1.0").push_tag(b"SN", &"MN988713.1").push_tag(b"LN", &fm_index.len));
  
     let mut sam_file = Writer::from_path(output, &header, Format::SAM).ok().expect("Error opening file");
 
