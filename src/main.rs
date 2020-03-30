@@ -132,7 +132,7 @@ impl FmIndex {
 			//println!("Seraching for {} in range : {:?} ", c2, bwt_interval);
 			bwt_interval 
 				= match self.interval_step(c2, bwt_interval) {
-					None => {println!("mismatch"); return (bwt_interval, match_len)},
+					None => {return (bwt_interval, match_len)},
 					Some(interval) => { match_len+= 1; interval }
 				};
 		}
@@ -287,26 +287,24 @@ fn fitting_alignment(x : &str, y : &str) -> Vec<Alignment> {
 		}
 	}
 
-	println!("Max val {:?} @ {:?}", max_val, max_pos);
-    if max_val >0 {
-        println!("hang:");
-	    //print_2d_vec(&matrix);
-	    print_2d_vec(&path_next);
+	//println!("Max val {:?} @ {:?}", max_val, max_pos);
+    //if max_val >0 {
+    //    //println!("hang:");
+	//    //print_2d_vec(&matrix);
+	//    print_2d_vec(&path_next);
 
-    }
-
-    let mut backtrace_cache : HashMap<(usize, usize), Vec<Vec<Cigar>>> = HashMap::new();
+    //}
 
 	//Begin the backtracing process
 	let paths = &path_next[max_pos.0][max_pos.1];
 
 	//pos : (y,x)
-	fn get_cigars (paths : &Vec<(usize, usize)>, (pos_y, pos_x) : (usize, usize), cigar_acc : &Vec<Cigar>, x : &str, y : &str, matrix : &Vec<Vec<i32>>, path_next : &Vec<Vec<Vec<(usize, usize)>>>, cigar_pos : usize, max_val : i32, backtrace_cache : &mut HashMap<(usize, usize), Vec<Vec<Cigar>>>) -> Vec<Alignment>{
+	fn get_cigars (paths : &Vec<(usize, usize)>, (pos_y, pos_x) : (usize, usize), cigar_acc : &Vec<Cigar>, x : &str, y : &str, matrix : &Vec<Vec<i32>>, path_next : &Vec<Vec<Vec<(usize, usize)>>>, cigar_pos : usize, max_val : i32) -> Vec<Alignment>{
         //println!("{:?}", (pos_y, pos_x));
         //thread::sleep(time::Duration::from_secs(2));
 		//Base case for when we reach the boundries of the matrix
 		if paths.len() == 0 {
-            println!("Returning");
+            //println!("Returning");
 			return vec![Alignment {
                 score: max_val,
                 CIGAR: cigar_acc.to_vec(),
@@ -340,7 +338,7 @@ fn fitting_alignment(x : &str, y : &str) -> Vec<Alignment> {
 			}
 		};
 
-        println!("Processing paths : {:?} @ {:?}", paths, (pos_y, pos_x));
+        //println!("Processing paths : {:?} @ {:?}", paths, (pos_y, pos_x));
         //thread::sleep(time::Duration::from_millis(450));
 
 		//let mut next = (paths[0].0, paths[0].1);
@@ -351,43 +349,15 @@ fn fitting_alignment(x : &str, y : &str) -> Vec<Alignment> {
         //Process all possible paths
 		for i in 0..paths.len() {
 			let new_next = (paths[i].0, paths[i].1);
-            let new_cigar = updated_cigar((pos_y, pos_x), new_next, &cigar_acc);
-
-            //If the next cell has not been processed before
-            if (*backtrace_cache).contains_key(&new_next) == false{
-                let mut vals = get_cigars(&path_next[new_next.0][new_next.1], new_next, &new_cigar, x, y, &matrix, &path_next, cigar_pos, max_val, backtrace_cache);
-
-                //Add the new cigar characters to the cache
-                let cache = vals.iter().map(|align| align.CIGAR[new_cigar.len()..].to_vec()).collect::<Vec<Vec<Cigar>>>();
-                println!("Cache {:?}", vals.len());
-                (*backtrace_cache).insert(new_next, cache);
-
-                ret_vec.append(&mut vals);
-            }
-            else {
-                println!("Found cache");
-                let mut vals = (*backtrace_cache).get(&new_next).unwrap().iter().map(
-                    |pre_calc| { 
-                        let mut c = new_cigar.clone(); 
-                        c.append(&mut pre_calc.clone()); 
-                        Alignment {
-                            score: max_val,
-                            CIGAR: c,
-                            pos: cigar_pos
-                        }
-                    }).collect::<Vec<Alignment>>();
-                ret_vec.append(&mut vals);
-                return ret_vec;
-            }
-
-			//ret_vec.append(&mut get_cigars(&path_next[next.0][next.1], next, &updated_cigar((pos_y, pos_x), next, &cigar_acc), x, y, &matrix, &path_next, cigar_pos, max_val));
+            let mut val = get_cigars(&path_next[new_next.0][new_next.1], new_next, &updated_cigar((pos_y, pos_x), new_next, &cigar_acc), x, y, &matrix, &path_next, cigar_pos, max_val);
+			ret_vec.append(&mut val);
 		}
 
 		return ret_vec;
 	};
 
-    println!("Getting cigars");
-	return get_cigars(paths, max_pos, &Vec::new(), x, y, &matrix, &path_next, max_pos.1, max_val, &mut backtrace_cache);
+    //println!("Getting cigars");
+	return get_cigars(paths, max_pos, &Vec::new(), x, y, &matrix, &path_next, max_pos.1, max_val);
     //Placeholdeer
     //return Vec::new();
 }
@@ -406,9 +376,15 @@ fn align(bwt_file : &str, reads : &str, output : &str){
         .map(|l| l.expect("Could not parse line"))
         .collect();
 
+    let mut header = Header::new();
+    header.push_record(HeaderRecord::new(b"SQ").push_tag(b"VN", &"1.0").push_tag(b"SN", &"nCov-2019").push_tag(b"LN", &fm_index.len));
+ 
+    let mut sam_file = Writer::from_path(output, &header, Format::SAM).ok().expect("Error opening file");
+
 	let reads = parse_reads(reads);
 	const gap : usize = 5;
 
+    let mut i = 0;
 	for read in reads.iter() {
 		let mut alignments : Vec<Alignment> = Vec::new();
 		let read_len = read.seq.len();
@@ -441,14 +417,15 @@ fn align(bwt_file : &str, reads : &str, output : &str){
 
 				//println!("Aligning {} to {}", read.seq, &fm_index.seq[start..end]);
 				let all_align = fitting_alignment(&fm_index.seq[start..end], &read.seq);
-                panic!("Done");
-                for align in all_align {
+                for mut align in all_align {
     				if align.score > best_score {
     					best_score = align.score;
+                        align.pos = start;
     					alignments = vec![align; 1];
-                        println!("new best score");
+                        //println!("new best score");
     				}
     				else if align.score == best_score {
+                        align.pos = start;
     					alignments.push(align);
     				}
                 }
@@ -456,14 +433,14 @@ fn align(bwt_file : &str, reads : &str, output : &str){
 		}
 
         println!("writing to sam");
-        write_sam(alignments,  &read.seq, &fm_index,output);
+        write_sam(alignments,  &read.seq, i, &mut sam_file);
+        i+=1;
 	}
 
 }
 
 #[test]
 fn test_borrow(){
-    test_borrow();
     let mut a = Vec::<i32>::new();
     println!("{:?}", a);
     add(&mut a);
@@ -573,11 +550,14 @@ fn test_write_sam2(){
  
 }
 
-fn write_sam(alignments : Vec<Alignment>, read : &str, index : &FmIndex, output : &str){
-    let mut header = Header::new();
-    header.push_record(HeaderRecord::new(b"SQ").push_tag(b"VN", &"1.0").push_tag(b"SN", &"nCov-2019").push_tag(b"LN", &15072423));
-    let mut sam = Writer::from_path("fuck", &header, Format::SAM).ok().expect("Error opening file");
-    
+fn write_sam(alignments : Vec<Alignment>, read : &str, read_index : i32, output : &mut Writer){
+    //println!("{:?}", alignments);
+    //let mut header = Header::new();
+    //header.push_record(HeaderRecord::new(b"SQ").push_tag(b"VN", &"1.0").push_tag(b"SN", &"nCov-2019").push_tag(b"LN", &index.len));
+ 
+    //let mut output = Writer::from_path("FUCK", &header, Format::SAM).ok().expect("Error opening file");
+
+
     //Fields that need to be set
     //querynam
     //query_seq
@@ -589,11 +569,14 @@ fn write_sam(alignments : Vec<Alignment>, read : &str, index : &FmIndex, output 
     //next_ref_start
 
     let mut i = 0;
-    for align in alignments{
+    for mut align in alignments{
+        align.CIGAR.reverse();
         let mut rec = Record::new();
         rec.set(
             { 
                 let mut name = "read_".to_string();
+                name.push_str(&read_index.to_string());
+                name.push_str("_");
                 name.push_str(&i.to_string());
                 name
             }
@@ -616,7 +599,7 @@ fn write_sam(alignments : Vec<Alignment>, read : &str, index : &FmIndex, output 
         //Documentation specifies 0-based
         rec.set_pos((align.pos - 1) as i64);
 
-        sam.write(&mut rec).expect("Failed to write record.");
+        output.write(&mut rec).expect("Failed to write record.");
         i+=1;
     }
 
